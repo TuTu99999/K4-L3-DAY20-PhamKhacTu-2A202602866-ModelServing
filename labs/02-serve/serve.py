@@ -66,6 +66,12 @@ def main() -> int:
         print(f"  endpoints: http://localhost:{port}/v1/embeddings")
     print(f"\n  {' '.join(cmd)}\n")
 
+    # os.execv() does not reliably hand the console over to a native executable
+    # on Windows. Keep Python as the parent there so Ctrl-C and server output stay
+    # attached to the terminal, matching the documented `lab.ps1 serve` behavior.
+    if os.name == "nt":
+        return subprocess.run(cmd, check=False).returncode
+
     try:
         os.execv(cmd[0], cmd)          # hand the terminal over; Ctrl-C stops the server
     except OSError:

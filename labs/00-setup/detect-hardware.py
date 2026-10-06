@@ -26,6 +26,40 @@ def run(cmd: list[str], timeout: int = 5) -> tuple[int, str]:
         return 127, ""
 
 
+def windows_physical_cores() -> int | None:
+    """Count processor-core records without relying on WMI permissions."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        relation_processor_core = 0
+        needed = ctypes.c_ulong(0)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        fn = kernel32.GetLogicalProcessorInformationEx
+        fn.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        fn.restype = ctypes.c_bool
+        fn(relation_processor_core, None, ctypes.byref(needed))
+        if not needed.value:
+            return None
+        buf = ctypes.create_string_buffer(needed.value)
+        if not fn(relation_processor_core, buf, ctypes.byref(needed)):
+            return None
+        raw = bytes(buf[:needed.value])
+        count, offset = 0, 0
+        while offset + 8 <= len(raw):
+            relationship = int.from_bytes(raw[offset:offset + 4], "little")
+            size = int.from_bytes(raw[offset + 4:offset + 8], "little")
+            if size < 8 or offset + size > len(raw):
+                break
+            if relationship == relation_processor_core:
+                count += 1
+            offset += size
+        return count or None
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
 def detect_cpu() -> dict:
     info = {"arch": platform.machine(), "cores_logical": os.cpu_count() or 1}
     if sys.platform == "darwin":
@@ -76,6 +110,18 @@ def detect_cpu() -> dict:
                 info["cores_physical"] = int(data.get("NumberOfCores") or 0) or None
             except (ValueError, KeyError):
                 pass
+        if info.get("model") in (None, "", "unknown"):
+            try:
+                import winreg
+
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+                ) as key:
+                    info["model"] = str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip()
+            except OSError:
+                pass
+        info["cores_physical"] = info.get("cores_physical") or windows_physical_cores()
     info.setdefault("model", "unknown")
     if not info.get("cores_physical"):
         info["cores_physical"] = info["cores_logical"]
@@ -95,14 +141,35 @@ def detect_ram_gb() -> float:
         except OSError:
             pass
     elif sys.platform == "win32":
+        try:
+            import ctypes
+
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("length", ctypes.c_ulong),
+                    ("memory_load", ctypes.c_ulong),
+                    ("total_phys", ctypes.c_ulonglong),
+                    ("avail_phys", ctypes.c_ulonglong),
+                    ("total_page_file", ctypes.c_ulonglong),
+                    ("avail_page_file", ctypes.c_ulonglong),
+                    ("total_virtual", ctypes.c_ulonglong),
+                    ("avail_virtual", ctypes.c_ulonglong),
+                    ("avail_extended_virtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatusEx()
+            status.length = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return round(status.total_phys / 1024**3, 1)
+        except (AttributeError, OSError):
+            pass
         rc, out = run(
             ["powershell", "-NoProfile", "-Command",
              "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory"],
             timeout=20,
         )
-        digits = "".join(c for c in out if c.isdigit())
-        if digits:
-            return round(int(digits) / 1024**3, 1)
+        if rc == 0 and out.strip().isdigit():
+            return round(int(out.strip()) / 1024**3, 1)
     return 0.0
 
 

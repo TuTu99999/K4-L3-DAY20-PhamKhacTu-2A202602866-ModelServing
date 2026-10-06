@@ -7,6 +7,9 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..\..')
 
+# Keep Python output UTF-8 even under Windows PowerShell 5.1's legacy console encoding.
+$env:PYTHONUTF8 = '1'
+
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: Python not found. Install 3.10+ from https://www.python.org/downloads/" -ForegroundColor Red
     Write-Host "       Tick 'Add python.exe to PATH' in the installer." -ForegroundColor Yellow
